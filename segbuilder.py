@@ -97,6 +97,17 @@ def coverage(frames, start, stride):
 	return 1 - covered/stride ### return fraction of coverage
 
 ###
+def str_framecache(frames, ifo, type):
+        """
+        build a string for the framecache
+        """
+        S = ""
+        for frame in frames:
+                s, d = frame.strip(".gwf").split("-")[-2:]
+                S += "%s %s %s %s %s\n"%(ifo, type, s, d, frame)
+        return S
+
+###
 def extract_scisegs(frames, channel, bitmask, start, stride):
 	"""
 	extract scisegs from channel in frames using bitmask
@@ -239,20 +250,8 @@ max_wait = config.getint("general", "max_wait")
 #========================
 
 ### output formatting
-
-
-
-
-
-
-
-raise StandardError("WRITE config.ini OPTIONS FOR OUTPUT FORMAT")
-
-
-
-
-
-
+stream = config.getboolean("output", "stream")
+separate = config.getboolean("output", "separate")
 
 #========================
 
@@ -274,6 +273,8 @@ else:
 sciseg_channel = config.get("scisegs","channel")
 sciseg_bitmask = config.getint("scisegs","bitmask")
 
+print "\n\n\tWARNING: will need to provide functionality to read off multiple bit masks?\n"
+
 #=================================================
 
 ### setting up initial time
@@ -283,30 +284,15 @@ if opts.gps_start == None:
 else:
 	t = (opts.gps_start/stride)*stride ### round to integer number of strides
 
+if stream:
+	streamfile = "%s/segments/%s_current.seg"%(outputdir, ifo)
+	report("writing streaming segment information into : %s"%streamfile, opts.verbose)
+	streamfile_obj = open(streamfile, "a")
 
 
+	print "\n\nWARNING: need to parse the existing streamfile to see if we need to pick up where we left off?\n"
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+	gpsstop = None
 
 #=================================================
 # LOOP until we "finish"
@@ -318,7 +304,7 @@ while t < opts.gps_end:
 
 	### wait to analyze this stride
 	nowgps = float( gpstime.gps_time_now() )
-	wait = (t+duration+padding) + delay - nowgps 
+	wait = (t+stride+padding) + delay - nowgps 
 	if wait > 0:
 		report("sleeping for %d sec"%wait, opts.verbose)
 		time.sleep(wait)
@@ -337,18 +323,18 @@ while t < opts.gps_end:
 #	frames = find_frames(ldr_server, ldr_url_type, ldr_type, ifo, t-padding, stride+2*padding, verbose=opts.verbose) 
 #	covered = coverage( frames, t-padding, stride+2*padding) ### find out the coverage
 	if opts.shared_mem:
-		frames = shm_find_frames(shmdir, ifo, ldr_type, t-padding, duration+twopadding, verbose=opts.verbose)
+		frames = shm_find_frames(shmdir, ifo, ldr_type, t-padding, stride+twopadding, verbose=opts.verbose)
 	else:
-		frames = ldr_find_frames(ldr_server, ldr_url_type, ldr_type, ifo, t-padding, duration+twopadding, verbose=opts.verbose) 
+		frames = ldr_find_frames(ldr_server, ldr_url_type, ldr_type, ifo, t-padding, stride+twopadding, verbose=opts.verbose) 
 
-	covered = coverage( frames, t-padding, duration+2*padding) ### find out the coverage
+	covered = coverage( frames, t-padding, stride+2*padding) ### find out the coverage
 
 	### keep looking every second until we either find frames or time out
 	if covered < 1.0:
 		report("coverage = %.5f < 1.0, we'll check every second for more frames and wait at most %d seconds before proceeding."%(covered, max_wait), opts.verbose)
 
 #	while (covered < 1.0) and ( (float(gpstime.gps_time_now()) - ( (t+stride+padding) + delay ) ) < max_wait ):
-	while (covered < 1.0) and ( (float(gpstime.gps_time_now()) - ( (t+duration+twopadding) + delay ) ) < max_wait ):
+	while (covered < 1.0) and ( (float(gpstime.gps_time_now()) - ( (t+stride+twopadding) + delay ) ) < max_wait ):
 
 		###
 		time.sleep( 1 ) # don't break the file system
@@ -357,10 +343,10 @@ while t < opts.gps_end:
 #		frames = find_frames(ldr_server, ldr_url_type, ldr_type, ifo, t-padding, stride+2*padding, verbose=False) ### don't report this every time in the loop
 #		covered = coverage( frames, t-padding, stride+2*padding) ### find out the coverage
 		if opts.shared_mem:
-			frames = shm_find_frames(shmdir, ifo, ldr_type, t-padding, duration+twopadding, verbose=opts.verbose)
+			frames = shm_find_frames(shmdir, ifo, ldr_type, t-padding, stride+twopadding, verbose=opts.verbose)
 		else:
-			frames = ldr_find_frames(ldr_server, ldr_url_type, ldr_type, ifo, t-padding, duration+twopadding, verbose=False) ### don't report this every time in the loop
-		covered = coverage( frames, t-padding, duration+twopadding) ### find out the coverage
+			frames = ldr_find_frames(ldr_server, ldr_url_type, ldr_type, ifo, t-padding, stride+twopadding, verbose=False) ### don't report this every time in the loop
+		covered = coverage( frames, t-padding, stride+twopadding) ### find out the coverage
 
 		if covered >= 1.0:
 			report("covered >= 1.0", opts.verbose)
@@ -370,7 +356,7 @@ while t < opts.gps_end:
 
 	### write framecache
 #	framecache = "%s/%s_%d-%d.lcf"%(framedir, ifo, t, stride)
-	framecache = "%s/%s_%d-%d.lcf"%(framedir, ifo, t-padding, duration+twopadding)
+	framecache = "%s/%s_%d-%d.lcf"%(framedir, ifo, t-padding, stride+twopadding)
 	report("writing framecache : %s"%framecache, opts.verbose)
 
 	framecache_obj = open(framecache, "w")
@@ -379,23 +365,64 @@ while t < opts.gps_end:
 
 	### if we have data, process it!
 	if not frames:
-		report("no frames found! skipping...", opts.verbose)
-
+		report("no frames found! -> no segments", opts.verbose)
+		segs = []
 	else:
 		### find scisegs
+		report("extracting scisegs", opts.verbose)
 #		segfile = "%s/%s_%d-%d.seg"%(segdir, ifo, t, stride)
-		segfile = "%s/%s_%d-%d.seg"%(segdir, ifo, t-padding, duration+twopadding)
-		report("extracting scisegs to : %s"%(segfile), opts.verbose)
 #		segs = extract_scisegs(frames, "%s1:%s"%(ifo, sciseg_channel), sciseg_bitmask, t-padding, stride+twopadding)
-		segs = extract_scisegs(frames, "%s1:%s"%(ifo, sciseg_channel), sciseg_bitmask, t-padding, duration+twopadding)
+		segs = extract_scisegs(frames, "%s1:%s"%(ifo, sciseg_channel), sciseg_bitmask, t-padding, stride+twopadding)
 
+	if stream:
+
+		if segs:
+			if (gpsstop == None): ### first segment or after a break in the data
+				streamfile_obj.write("%.9f "%segs[0][0])
+				for oldseg, newseg in zip(segs[:-1], segs[1:]):
+					streamfile_obj.write(" %.9f\n%.9f "%(oldseg[1], newseg[0]) )
+				streamfile_obj.flush()
+				gpsstop = segs[-1][1]
+
+			elif gpsstop == segs[0][0]: ### continuation of the current segment
+				for oldseg, newseg in zip(segs[:-1], segs[1:]):
+					streamfile_obj.write(" %.9f\n%.9f "%(oldseg[1], newseg[0]) )
+				if len(segs) > 1: ### only flush if we have to
+					streamfile_obj.flush()	
+				gpsstop = segs[-1][1]
+
+			else: ### the currnet segment is broken
+				streamfile_obj.write(" %.9f\n"%gpsstop)
+				for seg in segs[:-1]:
+					streamfile.write("%.9f  %.9f\n"%tuple(seg))
+				streamfile.write("%.9f "%(segs[-1][0]))
+				streamfile_obj.flush()
+				gpsstop = segs[-1][1]
+
+		elif (gpsstop != None): ### not segs, so a break in the data, and gpsstop was defined, so it is a new break
+			streamfile_obj.write(" %.9f\n"%gpsstop)
+			streamfile_obj.flush()
+			gpsstop = None
+
+		else:
+			pass
+
+	if separate:
+		segfile = "%s/%s_%d-%d.seg"%(segdir, ifo, t-padding, stride+twopadding)
 		report("writing scisegs : %s"%segfile, opts.verbose)
 		file_obj = open(segfile, "w")
 		for a, b in segs:
 			file_obj.write("%d %d"%(a, b))
 		file_obj.close()
 
+
 	report("Done with stride: [%d-%d, %d+%d]"%(t, padding, t+stride, padding), opts.verbose)
 
 	### increment!
 	t += stride
+
+### loop is over
+if stream:
+	if (gpsstop != None): ### currently in a segment
+		streamfile_obj.write(" %.9f\n"%gpsstop)
+	streamfile_obj.close()
